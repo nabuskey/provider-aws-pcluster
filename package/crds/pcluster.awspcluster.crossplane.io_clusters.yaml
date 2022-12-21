@@ -64,10 +64,13 @@ spec:
               forProvider:
                 description: ClusterParameters are the configurable fields of a Cluster.
                 properties:
-                  configurableField:
+                  clusterConfiguration:
+                    type: string
+                  region:
                     type: string
                 required:
-                - configurableField
+                - clusterConfiguration
+                - region
                 type: object
               providerConfigRef:
                 default:

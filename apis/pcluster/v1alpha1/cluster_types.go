@@ -27,7 +27,8 @@ import (
 
 // ClusterParameters are the configurable fields of a Cluster.
 type ClusterParameters struct {
-	ConfigurableField string `json:"configurableField"`
+	Region               string `json:"region"`
+	ClusterConfiguration string `json:"clusterConfiguration"`
 }
 
 // ClusterObservation are the observable fields of a Cluster.
