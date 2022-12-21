@@ -1,4 +1,4 @@
-module github.com/crossplane/provider-awspcluster
+module github.com/crossplane-contrib/provider-awspcluster
 
 go 1.19
 
