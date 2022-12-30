@@ -249,8 +249,17 @@ spec:
               atProvider:
                 description: ClusterObservation are the observable fields of a Cluster.
                 properties:
-                  observableField:
+                  cloudformationStackArn:
                     type: string
+                  clusterStatus:
+                    type: string
+                  lastUpdatedTime:
+                    type: string
+                  scheduler:
+                    properties:
+                      type:
+                        type: string
+                    type: object
                 type: object
               conditions:
                 description: Conditions of the resource.
