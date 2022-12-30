@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"reflect"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -33,7 +34,12 @@ type ClusterParameters struct {
 
 // ClusterObservation are the observable fields of a Cluster.
 type ClusterObservation struct {
-	ObservableField string `json:"observableField,omitempty"`
+	CloudformationStackArn string    `json:"cloudformationStackArn,omitempty"`
+	ClusterStatus          string    `json:"clusterStatus,omitempty"`
+	LastUpdatedTime        time.Time `json:"lastUpdatedTime,omitempty"`
+	Scheduler              struct {
+		Type string `json:"type,omitempty"`
+	} `json:"scheduler,omitempty"`
 }
 
 // A ClusterSpec defines the desired state of a Cluster.

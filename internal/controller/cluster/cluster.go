@@ -18,10 +18,14 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/types"
+	k8sexec "k8s.io/utils/exec"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -43,11 +47,16 @@ const (
 	errGetPC        = "cannot get ProviderConfig"
 	errGetCreds     = "cannot get credentials"
 
-	errNewClient = "cannot create new Service"
+	errNewClient                = "cannot create new Service"
+	errStatusNotFound errStatus = "clusterNotFound"
+	errStatusEmpty    errStatus = "emptyMessage"
+	virtualEnvPath              = "PYTHON_VENV_PATH"
 )
 
 // A NoOpService does nothing.
 type NoOpService struct{}
+
+type errStatus string
 
 var (
 	newNoOpService = func(_ []byte) (interface{}, error) { return &NoOpService{}, nil }
@@ -67,7 +76,7 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 		managed.WithExternalConnecter(&connector{
 			kube:         mgr.GetClient(),
 			usage:        resource.NewProviderConfigUsageTracker(mgr.GetClient(), &apisv1alpha1.ProviderConfigUsage{}),
-			newServiceFn: newNoOpService}),
+			newServiceFn: newExectuor}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
 		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
 		managed.WithConnectionPublishers(cps...))
@@ -84,7 +93,11 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 type connector struct {
 	kube         client.Client
 	usage        resource.Tracker
-	newServiceFn func(creds []byte) (interface{}, error)
+	newServiceFn func(creds []byte) (k8sexec.Interface, error)
+}
+
+func newExectuor(creds []byte) (k8sexec.Interface, error) {
+	return k8sexec.New(), nil
 }
 
 // Connect typically produces an ExternalClient by:
@@ -117,16 +130,26 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 	if err != nil {
 		return nil, errors.Wrap(err, errNewClient)
 	}
+	env, err := getVEnvPath()
+	if err != nil {
+		return nil, err
+	}
 
-	return &external{service: svc}, nil
+	return &external{env: []string{env}, executor: svc}, nil
 }
 
 // An ExternalClient observes, then either creates, updates, or deletes an
 // external resource to ensure it reflects the managed resource's desired state.
 type external struct {
-	// A 'client' used to connect to the external resource API. In practice this
-	// would be something like an AWS SDK client.
-	service interface{}
+	dir      string
+	env      []string
+	executor k8sexec.Interface
+}
+
+func (c *external) execPcluster(ctx context.Context, mg *v1alpha1.Cluster, args ...string) ([]byte, error) {
+	cmd := c.executor.CommandContext(ctx, "pcluster", args...)
+	cmd.SetEnv(c.env)
+	return cmd.CombinedOutput()
 }
 
 func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
@@ -134,10 +157,19 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 	if !ok {
 		return managed.ExternalObservation{}, errors.New(errNotCluster)
 	}
-
-	// These fmt statements should be removed in the real implementation.
-	fmt.Printf("Observing: %+v", cr)
-
+	output, err := c.execPcluster(ctx, cr, "describe-cluster", "--cluster-name", cr.Name)
+	if err != nil {
+		status, _ := getErrorStatus(output, cr.Name)
+		if status == errStatusNotFound {
+			return managed.ExternalObservation{ResourceExists: false}, nil
+		}
+		return managed.ExternalObservation{}, fmt.Errorf("failed to run pcluster command: %w", err)
+	}
+	var describeOutput DescribeClusterOutput
+	err = json.Unmarshal(output, &describeOutput)
+	if err != nil {
+		return managed.ExternalObservation{}, fmt.Errorf("failed to unmarshal describe response: %w", err)
+	}
 	return managed.ExternalObservation{
 		// Return false when the external resource does not exist. This lets
 		// the managed resource reconciler know that it needs to call Create to
@@ -194,4 +226,35 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) error {
 	fmt.Printf("Deleting: %+v", cr)
 
 	return nil
+}
+
+func getVEnvPath() (string, error) {
+	vEnvPath, ok := os.LookupEnv(virtualEnvPath)
+	if !ok {
+		return "", nil
+	}
+
+	_, err := os.Stat(fmt.Sprintf("%s/bin/pcluster", vEnvPath))
+	if err != nil {
+		return "", fmt.Errorf("pcluster file not found: %w", err)
+	}
+	//cmd.Dir = vEnvPath
+	virtEnvPath := fmt.Sprintf("PATH=%s/bin:%s", vEnvPath, os.Getenv("PATH"))
+	//cmd.Env = append(cmd.Env, virtEnvPath)
+	return virtEnvPath, nil
+}
+
+func getErrorStatus(cmdOutput []byte, clusterName string) (errStatus, error) {
+	var pErr errorOutput
+	err := json.Unmarshal(cmdOutput, &pErr)
+	if err != nil {
+		return "", err
+	}
+	msg := pErr.Message
+	switch {
+	case strings.HasPrefix(msg, fmt.Sprintf("Cluster '%s' does not exist", clusterName)):
+		return errStatusNotFound, nil
+	default:
+		return errStatusEmpty, nil
+	}
 }
