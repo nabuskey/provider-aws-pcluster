@@ -50,16 +50,28 @@ const (
 	errGetPC        = "cannot get ProviderConfig"
 	errGetCreds     = "cannot get credentials"
 
-	errNewClient                = "cannot create new Service"
+	errNewClient                    = "cannot create new Service"
+	virtualEnvPath                  = "PYTHON_VENV_PATH"
+	CreateInProgress PClusterStatus = "CREATE_IN_PROGRESS"
+	CreateFailed     PClusterStatus = "CREATE_FAILED"
+	CreateComplete   PClusterStatus = "CREATE_COMPLETE"
+	DeleteInProgress PClusterStatus = "DELETE_IN_PROGRESS"
+	DeleteFailed     PClusterStatus = "DELETE_FAILED"
+	DeleteComplete   PClusterStatus = "DELETE_COMPLETE"
+	UpdateInProgress PClusterStatus = "UPDATE_IN_PROGRESS"
+	UpdateComplete   PClusterStatus = "UPDATE_COMPLETE"
+	UpdateFailed     PClusterStatus = "UPDATE_FAILED"
+
 	errStatusNotFound errStatus = "clusterNotFound"
 	errStatusEmpty    errStatus = "emptyMessage"
-	virtualEnvPath              = "PYTHON_VENV_PATH"
 )
 
 // A NoOpService does nothing.
 type NoOpService struct{}
 
 type errStatus string
+
+type PClusterStatus = string
 
 var (
 	newNoOpService = func(_ []byte) (interface{}, error) { return &NoOpService{}, nil }
@@ -198,20 +210,20 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 	eo := managed.ExternalObservation{}
 	switch describeOutput.ClusterStatus {
-	case v1alpha1.CreateInProgress, v1alpha1.UpdateInProgress:
+	case CreateInProgress, UpdateInProgress:
 		eo.ResourceExists = true
 		eo.ResourceUpToDate = true
-	case v1alpha1.CreateComplete, v1alpha1.UpdateComplete:
+	case CreateComplete, UpdateComplete:
 		eo.ResourceExists = true
 		eo.ResourceUpToDate = true
 		cr.SetConditions(xpv1.Available())
-	case v1alpha1.DeleteComplete, v1alpha1.CreateFailed:
+	case DeleteComplete, CreateFailed:
 		eo.ResourceExists = false
 		eo.ResourceUpToDate = false
-	case v1alpha1.UpdateFailed, v1alpha1.DeleteFailed:
+	case UpdateFailed, DeleteFailed:
 		eo.ResourceExists = true
 		eo.ResourceUpToDate = false
-	case v1alpha1.DeleteInProgress:
+	case DeleteInProgress:
 		eo.ResourceExists = true
 		eo.ResourceUpToDate = true
 	}
@@ -278,7 +290,7 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 	if err != nil {
 		return managed.ExternalUpdate{}, fmt.Errorf("failed to unmarshal update output: %w", err)
 	}
-	
+	setStatus(updateOutput.Cluster, cr)
 	return managed.ExternalUpdate{
 		// Optionally return any details that may be required to connect to the
 		// external resource. These will be stored as the connection secret.
@@ -293,7 +305,23 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) error {
 	}
 
 	fmt.Printf("Deleting: %+v", cr)
-
+	args := []string{
+		"update-cluster",
+		"--cluster-name",
+		cr.Name,
+		"--region",
+		cr.Spec.ForProvider.Region,
+	}
+	output, err := c.execute(ctx, cr, args)
+	if err != nil {
+		return err
+	}
+	var deleteOutput DeleteClusterOutput
+	err = json.Unmarshal(output, &deleteOutput)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal update output: %w", err)
+	}
+	setStatus(deleteOutput.Cluster, cr)
 	return nil
 }
 
@@ -352,6 +380,6 @@ func writeConfigToFile(input string, filePath string) error {
 func setStatus(output OutputCluster, cluster *v1alpha1.Cluster) {
 	cluster.Status.AtProvider.ClusterStatus = output.ClusterStatus
 	cluster.Status.AtProvider.CloudformationStackArn = output.CloudformationStackArn
-	cluster.Status.AtProvider.Scheduler.Type = output.Scheduler.SchedulerType
+	cluster.Status.AtProvider.Scheduler.SchedulerType = output.Scheduler.SchedulerType
 	cluster.Status.AtProvider.ClusterName = output.ClusterName
 }

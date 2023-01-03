@@ -251,6 +251,8 @@ spec:
                 properties:
                   cloudformationStackArn:
                     type: string
+                  clusterName:
+                    type: string
                   clusterStatus:
                     type: string
                   lastUpdatedTime:
