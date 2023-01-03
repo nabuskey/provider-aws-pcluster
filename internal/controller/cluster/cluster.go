@@ -23,6 +23,7 @@ import (
 	"os"
 	"strings"
 
+	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/types"
 	k8sexec "k8s.io/utils/exec"
@@ -42,6 +43,8 @@ import (
 )
 
 const (
+	clusterConfigFileName = "cluster-config.yaml"
+
 	errNotCluster   = "managed resource is not a Cluster custom resource"
 	errTrackPCUsage = "cannot track ProviderConfig usage"
 	errGetPC        = "cannot get ProviderConfig"
@@ -146,10 +149,30 @@ type external struct {
 	executor k8sexec.Interface
 }
 
-func (c *external) execPcluster(ctx context.Context, mg *v1alpha1.Cluster, args ...string) ([]byte, error) {
+func (c *external) execPcluster(ctx context.Context, cr *v1alpha1.Cluster, args ...string) ([]byte, error) {
 	cmd := c.executor.CommandContext(ctx, "pcluster", args...)
 	cmd.SetEnv(c.env)
+	cmd.SetDir(c.dir)
 	return cmd.CombinedOutput()
+}
+
+func (c *external) execute(ctx context.Context, cr *v1alpha1.Cluster, args []string) ([]byte, error) {
+	dir, err := createTempDir(cr.Name)
+	if err != nil {
+		return []byte{}, err
+	}
+	defer os.RemoveAll(dir)
+
+	c.dir = dir
+	err = writeConfigToFile(cr.Spec.ForProvider.ClusterConfiguration, fmt.Sprintf("%s/%s", dir, clusterConfigFileName))
+	if err != nil {
+		return []byte{}, err
+	}
+	output, err := c.execPcluster(ctx, cr, args...)
+	if err != nil {
+		return []byte{}, err
+	}
+	return output, nil
 }
 
 func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
@@ -170,21 +193,30 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 	if err != nil {
 		return managed.ExternalObservation{}, fmt.Errorf("failed to unmarshal describe response: %w", err)
 	}
-	return managed.ExternalObservation{
-		// Return false when the external resource does not exist. This lets
-		// the managed resource reconciler know that it needs to call Create to
-		// (re)create the resource, or that it has successfully been deleted.
-		ResourceExists: true,
 
-		// Return false when the external resource exists, but it not up to date
-		// with the desired managed resource state. This lets the managed
-		// resource reconciler know that it needs to call Update.
-		ResourceUpToDate: true,
+	cr.SetConditions(xpv1.Unavailable())
 
-		// Return any details that may be required to connect to the external
-		// resource. These will be stored as the connection secret.
-		ConnectionDetails: managed.ConnectionDetails{},
-	}, nil
+	eo := managed.ExternalObservation{}
+	switch describeOutput.ClusterStatus {
+	case v1alpha1.CreateInProgress, v1alpha1.UpdateInProgress:
+		eo.ResourceExists = true
+		eo.ResourceUpToDate = true
+	case v1alpha1.CreateComplete, v1alpha1.UpdateComplete:
+		eo.ResourceExists = true
+		eo.ResourceUpToDate = true
+		cr.SetConditions(xpv1.Available())
+	case v1alpha1.DeleteComplete, v1alpha1.CreateFailed:
+		eo.ResourceExists = false
+		eo.ResourceUpToDate = false
+	case v1alpha1.UpdateFailed, v1alpha1.DeleteFailed:
+		eo.ResourceExists = true
+		eo.ResourceUpToDate = false
+	case v1alpha1.DeleteInProgress:
+		eo.ResourceExists = true
+		eo.ResourceUpToDate = true
+	}
+
+	return eo, nil
 }
 
 func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.ExternalCreation, error) {
@@ -194,6 +226,25 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 	}
 
 	fmt.Printf("Creating: %+v", cr)
+	args := []string{
+		"create-cluster",
+		"--cluster-configuration",
+		clusterConfigFileName,
+		"--cluster-name",
+		cr.Name,
+		"--region",
+		cr.Spec.ForProvider.Region,
+	}
+	output, err := c.execute(ctx, cr, args)
+	if err != nil {
+		return managed.ExternalCreation{}, err
+	}
+	var createOutput CreateClusterOutput
+	err = json.Unmarshal(output, &createOutput)
+	if err != nil {
+		return managed.ExternalCreation{}, fmt.Errorf("failed to unmarshal create output: %w", err)
+	}
+	setStatus(createOutput.Cluster, cr)
 
 	return managed.ExternalCreation{
 		// Optionally return any details that may be required to connect to the
@@ -209,7 +260,25 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 	}
 
 	fmt.Printf("Updating: %+v", cr)
-
+	args := []string{
+		"update-cluster",
+		"--cluster-configuration",
+		clusterConfigFileName,
+		"--cluster-name",
+		cr.Name,
+		"--region",
+		cr.Spec.ForProvider.Region,
+	}
+	output, err := c.execute(ctx, cr, args)
+	if err != nil {
+		return managed.ExternalUpdate{}, err
+	}
+	var updateOutput UpdateClusterOutput
+	err = json.Unmarshal(output, &updateOutput)
+	if err != nil {
+		return managed.ExternalUpdate{}, fmt.Errorf("failed to unmarshal update output: %w", err)
+	}
+	
 	return managed.ExternalUpdate{
 		// Optionally return any details that may be required to connect to the
 		// external resource. These will be stored as the connection secret.
@@ -257,4 +326,32 @@ func getErrorStatus(cmdOutput []byte, clusterName string) (errStatus, error) {
 	default:
 		return errStatusEmpty, nil
 	}
+}
+
+func createTempDir(prefix string) (string, error) {
+	dir, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		return "", fmt.Errorf("failed to create tmp dir: %w", err)
+	}
+	return dir, nil
+}
+
+func writeConfigToFile(input string, filePath string) error {
+	configFile, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create config file: %w", err)
+	}
+	defer configFile.Close()
+	_, err = configFile.Write([]byte(input))
+	if err != nil {
+		return fmt.Errorf("failed to write to config file: %w", err)
+	}
+	return nil
+}
+
+func setStatus(output OutputCluster, cluster *v1alpha1.Cluster) {
+	cluster.Status.AtProvider.ClusterStatus = output.ClusterStatus
+	cluster.Status.AtProvider.CloudformationStackArn = output.CloudformationStackArn
+	cluster.Status.AtProvider.Scheduler.Type = output.Scheduler.SchedulerType
+	cluster.Status.AtProvider.ClusterName = output.ClusterName
 }

@@ -25,6 +25,20 @@ import (
 	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
 )
 
+const (
+	CreateInProgress PClusterStatus = "CREATE_IN_PROGRESS"
+	CreateFailed     PClusterStatus = "CREATE_FAILED"
+	CreateComplete   PClusterStatus = "CREATE_COMPLETE"
+	DeleteInProgress PClusterStatus = "DELETE_IN_PROGRESS"
+	DeleteFailed     PClusterStatus = "DELETE_FAILED"
+	DeleteComplete   PClusterStatus = "DELETE_COMPLETE"
+	UpdateInProgress PClusterStatus = "UPDATE_IN_PROGRESS"
+	UpdateComplete   PClusterStatus = "UPDATE_COMPLETE"
+	UpdateFailed     PClusterStatus = "UPDATE_FAILED"
+)
+
+type PClusterStatus = string
+
 // ClusterParameters are the configurable fields of a Cluster.
 type ClusterParameters struct {
 	Region               string `json:"region"`
@@ -33,6 +47,7 @@ type ClusterParameters struct {
 
 // ClusterObservation are the observable fields of a Cluster.
 type ClusterObservation struct {
+	ClusterName            string        `json:"clusterName,omitempty"`
 	CloudformationStackArn string        `json:"cloudformationStackArn,omitempty"`
 	ClusterStatus          string        `json:"clusterStatus,omitempty"`
 	LastUpdatedTime        string        `json:"lastUpdatedTime,omitempty"`
