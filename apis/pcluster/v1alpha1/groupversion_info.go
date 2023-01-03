@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package v1alpha1 contains the v1alpha1 group Sample resources of the AwsPcluster provider.
 // +kubebuilder:object:generate=true
-// +groupName=pcluster.awspcluster.crossplane.io
+// +groupName=cluster.awspcluster.crossplane.io
 // +versionName=v1alpha1
 package v1alpha1
 
@@ -27,7 +27,7 @@ import (
 
 // Package type metadata.
 const (
-	Group   = "pcluster.awspcluster.crossplane.io"
+	Group   = "cluster.awspcluster.crossplane.io"
 	Version = "v1alpha1"
 )
 

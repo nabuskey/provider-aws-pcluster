@@ -5,9 +5,9 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.10.0
   creationTimestamp: null
-  name: clusters.pcluster.awspcluster.crossplane.io
+  name: clusters.cluster.awspcluster.crossplane.io
 spec:
-  group: pcluster.awspcluster.crossplane.io
+  group: cluster.awspcluster.crossplane.io
   names:
     categories:
     - crossplane
