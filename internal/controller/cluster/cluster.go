@@ -69,7 +69,7 @@ const (
 // A NoOpService does nothing.
 type NoOpService struct{}
 
-type errStatus string
+type errStatus = string
 
 type PClusterStatus = string
 
@@ -145,12 +145,12 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 	if err != nil {
 		return nil, errors.Wrap(err, errNewClient)
 	}
-	env, err := getVEnvPath()
+	path, err := getVEnvPath()
 	if err != nil {
 		return nil, err
 	}
-
-	return &external{env: []string{env}, executor: svc}, nil
+	env := append(os.Environ(), fmt.Sprintf("PATH=%s", path))
+	return &external{env: env, path: path, executor: svc}, nil
 }
 
 // An ExternalClient observes, then either creates, updates, or deletes an
@@ -158,14 +158,19 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 type external struct {
 	dir      string
 	env      []string
+	path     string
 	executor k8sexec.Interface
 }
 
 func (c *external) execPcluster(ctx context.Context, cr *v1alpha1.Cluster, args ...string) ([]byte, error) {
+	err := os.Setenv("PATH", c.path)
+	if err != nil {
+		return []byte{}, fmt.Errorf("failed to set PATH: %w", err)
+	}
 	cmd := c.executor.CommandContext(ctx, "pcluster", args...)
 	cmd.SetEnv(c.env)
 	cmd.SetDir(c.dir)
-	return cmd.CombinedOutput()
+	return cmd.CombinedOutput() // blocks
 }
 
 func (c *external) execute(ctx context.Context, cr *v1alpha1.Cluster, args []string) ([]byte, error) {
@@ -198,9 +203,10 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		if status == errStatusNotFound {
 			return managed.ExternalObservation{ResourceExists: false}, nil
 		}
-		return managed.ExternalObservation{}, fmt.Errorf("failed to run pcluster command: %w", err)
+		return managed.ExternalObservation{}, fmt.Errorf("failed to run pcluster command: %s %w", output, err)
 	}
 	var describeOutput DescribeClusterOutput
+	err = json.Unmarshal(output, &describeOutput.OutputCluster) // TODO avoid double unmarshal
 	err = json.Unmarshal(output, &describeOutput)
 	if err != nil {
 		return managed.ExternalObservation{}, fmt.Errorf("failed to unmarshal describe response: %w", err)
@@ -336,8 +342,7 @@ func getVEnvPath() (string, error) {
 		return "", fmt.Errorf("pcluster file not found: %w", err)
 	}
 	//cmd.Dir = vEnvPath
-	virtEnvPath := fmt.Sprintf("PATH=%s/bin:%s", vEnvPath, os.Getenv("PATH"))
-	//cmd.Env = append(cmd.Env, virtEnvPath)
+	virtEnvPath := fmt.Sprintf("%s/bin:%s", vEnvPath, os.Getenv("PATH"))
 	return virtEnvPath, nil
 }
 

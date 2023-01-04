@@ -1,9 +1,41 @@
-apiVersion: sample.awspcluster.crossplane.io/v1alpha1
-kind: MyType
+apiVersion: awspcluster.crossplane.io/v1alpha1
+kind: Cluster
 metadata:
-  name: example
+  name: test-cluster
 spec:
   forProvider:
-    configurableField: test
-  providerConfigRef:
-    name: example
+    region: us-west-2
+    clusterConfiguration: |
+      Region: us-west-2
+      Image:
+        Os: alinux2
+      HeadNode:
+        InstanceType: t2.micro
+        Networking:
+          SubnetId: subnet-03e674abd0cc8dbf6
+        Ssh:
+          KeyName: mccloman-2
+      Scheduling:
+        Scheduler: slurm
+        SlurmQueues:
+        - Name: queue1
+          ComputeResources:
+          - Name: t2micro
+            Instances:
+            - InstanceType: t2.micro
+            MinCount: 0
+            MaxCount: 10
+          Networking:
+            SubnetIds:
+            - subnet-031f8f2ca88ad11e7
+#  providerConfigRef:
+#    name: default
+---
+apiVersion: awspcluster.crossplane.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: None
+
