@@ -94,7 +94,11 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 			newServiceFn: newExectuor}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
 		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
-		managed.WithConnectionPublishers(cps...))
+		managed.WithConnectionPublishers(cps...),
+		managed.WithPollInterval(o.PollInterval),
+		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
+		managed.WithLogger(o.Logger.WithValues("controller", name)),
+	)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
@@ -312,7 +316,7 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) error {
 
 	fmt.Printf("Deleting: %+v", cr)
 	args := []string{
-		"update-cluster",
+		"delete-cluster",
 		"--cluster-name",
 		cr.Name,
 		"--region",

@@ -1,13 +1,38 @@
 # provider-awspcluster
 
-`provider-awspcluster` is a minimal [Crossplane](https://crossplane.io/) Provider
-that is meant to be used as a awspcluster for implementing new Providers. It comes
-with the following features that are meant to be refactored:
+## Developing Notes
+If you'd like to play with this repository while it's being developed tips to getting this to run:
 
-- A `ProviderConfig` type that only points to a credentials `Secret`.
-- A `MyType` resource type that serves as an example managed resource.
-- A managed resource controller that reconciles `MyType` objects and simply
-  prints their configuration in its `Observe` method.
+This provider requires the pcluster cli available for the provider to use. There are two ways to do this:
+- Global pcluster cli installed. Applicable when running in a container. 
+- Virtual Environment. This is the recommended way for development purposes. 
+
+### VEnv
+```bash
+python3 -m virtualenv pcluster
+cd pcluster
+source bin/activate
+python3 -m pip install --upgrade "aws-parallelcluster"
+deactivate
+pwd # save this output for PYTHON_VENV_PATH env variable
+```
+When using VEnv, you need to set the environment variable `PYTHON_VENV_PATH` when running this provider. This instructs provider of the location where the pcluster command can be found. 
+e.g.
+```bash
+PYTHON_VENV_PATH=/Users/manabu/provider-aws-pcluster/pcluster
+```
+In addition, you need to make AWS credentials available as environment variables for the provider to use:
+```bash
+AWS_ACCESS_KEY_ID=ACCESSKEY
+AWS_SECRET_ACCESS_KEY=SECERT
+AWS_SESSION_TOKEN=TOKEN
+AWS_DEFAULT_REGION=us-west-2
+```
+Finally to run the provider locally. Note that this will connect to your current kubernetes context.
+```bash
+go run ./cmd/provider --debug
+```
+
 
 ## Developing
 
