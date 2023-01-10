@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/pkg/logging"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/types"
 	k8sexec "k8s.io/utils/exec"
@@ -91,13 +92,13 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 		managed.WithExternalConnecter(&connector{
 			kube:         mgr.GetClient(),
 			usage:        resource.NewProviderConfigUsageTracker(mgr.GetClient(), &apisv1alpha1.ProviderConfigUsage{}),
-			newServiceFn: newExectuor}),
+			newServiceFn: newExectuor,
+			logger:       o.Logger,
+		}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
 		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
 		managed.WithConnectionPublishers(cps...),
 		managed.WithPollInterval(o.PollInterval),
-		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
-		managed.WithLogger(o.Logger.WithValues("controller", name)),
 	)
 
 	return ctrl.NewControllerManagedBy(mgr).
@@ -113,6 +114,7 @@ type connector struct {
 	kube         client.Client
 	usage        resource.Tracker
 	newServiceFn func(creds []byte) (k8sexec.Interface, error)
+	logger       logging.Logger
 }
 
 func newExectuor(creds []byte) (k8sexec.Interface, error) {
@@ -154,7 +156,7 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 		return nil, err
 	}
 	env := append(os.Environ(), fmt.Sprintf("PATH=%s", path))
-	return &external{env: env, path: path, executor: svc}, nil
+	return &external{env: env, path: path, executor: svc, logger: c.logger}, nil
 }
 
 // An ExternalClient observes, then either creates, updates, or deletes an
@@ -164,6 +166,7 @@ type external struct {
 	env      []string
 	path     string
 	executor k8sexec.Interface
+	logger   logging.Logger
 }
 
 func (c *external) execPcluster(ctx context.Context, cr *v1alpha1.Cluster, args ...string) ([]byte, error) {
@@ -174,9 +177,11 @@ func (c *external) execPcluster(ctx context.Context, cr *v1alpha1.Cluster, args 
 	cmd := c.executor.CommandContext(ctx, "pcluster", args...)
 	cmd.SetEnv(c.env)
 	cmd.SetDir(c.dir)
+	c.logger.Debug(fmt.Sprintf("executing: pcluster %s", strings.Join(args, " ")))
 	return cmd.CombinedOutput() // blocks
 }
 
+// set up things that the pcluster cli needs. e.g. directory, configuration file, env vars, etc.
 func (c *external) execute(ctx context.Context, cr *v1alpha1.Cluster, args []string) ([]byte, error) {
 	dir, err := createTempDir(cr.Name)
 	if err != nil {
@@ -216,28 +221,27 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		return managed.ExternalObservation{}, fmt.Errorf("failed to unmarshal describe response: %w", err)
 	}
 
-	cr.SetConditions(xpv1.Unavailable())
-
 	eo := managed.ExternalObservation{}
 	switch describeOutput.ClusterStatus {
-	case CreateInProgress, UpdateInProgress:
+	case CreateInProgress, UpdateInProgress, DeleteInProgress:
 		eo.ResourceExists = true
 		eo.ResourceUpToDate = true
 	case CreateComplete, UpdateComplete:
 		eo.ResourceExists = true
 		eo.ResourceUpToDate = true
 		cr.SetConditions(xpv1.Available())
-	case DeleteComplete, CreateFailed:
+	case CreateFailed:
 		eo.ResourceExists = false
-		eo.ResourceUpToDate = false
+		eo.ResourceUpToDate = true
+	case DeleteComplete:
+		eo.ResourceExists = false
+		eo.ResourceUpToDate = true
 	case UpdateFailed, DeleteFailed:
 		eo.ResourceExists = true
-		eo.ResourceUpToDate = false
-	case DeleteInProgress:
-		eo.ResourceExists = true
 		eo.ResourceUpToDate = true
+		cr.SetConditions(xpv1.Unavailable())
 	}
-
+	setStatus(describeOutput.OutputCluster, cr)
 	return eo, nil
 }
 
@@ -324,14 +328,16 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) error {
 	}
 	output, err := c.execute(ctx, cr, args)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to delete using pcluster cli: %w", err)
 	}
+
 	var deleteOutput DeleteClusterOutput
 	err = json.Unmarshal(output, &deleteOutput)
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal update output: %w", err)
 	}
-	setStatus(deleteOutput.Cluster, cr)
+	c.logger.Debug(fmt.Sprintf("deleted %s. response: %s", cr.Name, output))
+
 	return nil
 }
 
