@@ -18,13 +18,20 @@ package cluster
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
-
+	"github.com/crossplane-contrib/provider-awspcluster/apis/pcluster/v1alpha1"
+	"github.com/crossplane/crossplane-runtime/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/pkg/resource"
 	"github.com/crossplane/crossplane-runtime/pkg/test"
+	"github.com/google/go-cmp/cmp"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sexec "k8s.io/utils/exec"
+	fakeexec "k8s.io/utils/exec/testing"
 )
 
 // Unlike many Kubernetes projects Crossplane does not use third party testing
@@ -35,9 +42,36 @@ import (
 // https://github.com/golang/go/wiki/TestComments
 // https://github.com/crossplane/crossplane/blob/master/CONTRIBUTING.md#contributing-code
 
+func makeCluster() *v1alpha1.Cluster {
+	return &v1alpha1.Cluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test",
+		},
+		Spec: v1alpha1.ClusterSpec{
+			ForProvider: v1alpha1.ClusterParameters{
+				Region:               "us-eastish",
+				ClusterConfiguration: "Image:\n        Os: alinux2\n",
+			},
+		},
+		Status: v1alpha1.ClusterStatus{},
+	}
+}
+
+func readResourceFile(path string, errToReturn error) func() ([]byte, []byte, error) {
+	b, err := os.ReadFile(filepath.Join("resources", path))
+	if err != nil {
+		panic(fmt.Sprintf("couldn't read file: %s", err))
+	}
+
+	return func() ([]byte, []byte, error) {
+		return b, nil, errToReturn
+	}
+}
+
 func TestObserve(t *testing.T) {
 	type fields struct {
-		service interface{}
+		executor fakeexec.FakeExec
+		actions  []fakeexec.FakeCommandAction
 	}
 
 	type args struct {
@@ -56,12 +90,102 @@ func TestObserve(t *testing.T) {
 		args   args
 		want   want
 	}{
-		// TODO: Add test cases.
+		"resourceUpToDate": {
+			args: args{
+				ctx: context.Background(),
+				mg:  makeCluster(),
+			},
+			want: want{
+				o: managed.ExternalObservation{
+					ResourceExists:   true,
+					ResourceUpToDate: true,
+				},
+				err: nil,
+			},
+			fields: fields{
+				executor: fakeexec.FakeExec{
+					CommandScript: []fakeexec.FakeCommandAction{
+						func(cmd string, args ...string) k8sexec.Cmd {
+							return &fakeexec.FakeCmd{
+								CombinedOutputScript: []fakeexec.FakeAction{
+									readResourceFile("describeOutPut.json", nil),
+								},
+							}
+						},
+						func(cmd string, args ...string) k8sexec.Cmd {
+							return &fakeexec.FakeCmd{
+								CombinedOutputScript: []fakeexec.FakeAction{
+									readResourceFile("upToDate.json", fmt.Errorf("error")),
+								},
+							}
+						},
+					},
+				},
+			},
+		},
+		"resourceNotUpToDate": {
+			args: args{
+				ctx: context.Background(),
+				mg:  makeCluster(),
+			},
+			want: want{
+				o: managed.ExternalObservation{
+					ResourceExists:   true,
+					ResourceUpToDate: false,
+				},
+				err: nil,
+			},
+			fields: fields{
+				executor: fakeexec.FakeExec{
+					CommandScript: []fakeexec.FakeCommandAction{
+						func(cmd string, args ...string) k8sexec.Cmd {
+							return &fakeexec.FakeCmd{
+								CombinedOutputScript: []fakeexec.FakeAction{
+									readResourceFile("describeOutPut.json", nil),
+								},
+							}
+						},
+						func(cmd string, args ...string) k8sexec.Cmd {
+							return &fakeexec.FakeCmd{
+								CombinedOutputScript: []fakeexec.FakeAction{
+									readResourceFile("notUpToDate.json", fmt.Errorf("error")),
+								},
+							}
+						},
+					},
+				},
+			},
+		},
+		"resourceDoesNotExist": {
+			args: args{
+				ctx: context.Background(),
+				mg:  makeCluster(),
+			},
+			want: want{
+				o: managed.ExternalObservation{
+					ResourceExists: false,
+				},
+				err: nil,
+			},
+			fields: fields{
+				executor: fakeexec.FakeExec{
+					CommandScript: []fakeexec.FakeCommandAction{
+						func(cmd string, args ...string) k8sexec.Cmd {
+							return &fakeexec.FakeCmd{
+								CombinedOutputScript: []fakeexec.FakeAction{
+									readResourceFile("notFound.json", fmt.Errorf("notused")),
+								},
+							}
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := external{service: tc.fields.service}
+			e := external{executor: &tc.fields.executor, logger: logging.NewNopLogger()}
 			got, err := e.Observe(tc.args.ctx, tc.args.mg)
 			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.Observe(...): -want error, +got error:\n%s\n", tc.reason, diff)

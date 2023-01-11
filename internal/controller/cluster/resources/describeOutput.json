@@ -1,0 +1,26 @@
+{"creationTime": "2023-01-04T00:01:58.894Z",
+"version": "3.4.0",
+"clusterConfiguration": {
+"url": "https://test.cluster.dot.com"
+},
+"tags": [
+{
+"value": "3.4.0",
+"key": "parallelcluster:version"
+},
+{
+"value": "test-cluster",
+"key": "parallelcluster:cluster-name"
+}
+],
+"cloudFormationStackStatus": "CREATE_IN_PROGRESS",
+"clusterName": "test-cluster",
+"computeFleetStatus": "UNKNOWN",
+"cloudformationStackArn": "arn:aws:cloudformation:us-west-2:12345:stack/test-cluster/01faf160-8bc3-11ed-9c4c-0255eea00be7",
+"lastUpdatedTime": "2023-01-04T00:01:58.894Z",
+"region": "us-west-2",
+"clusterStatus": "CREATE_IN_PROGRESS",
+"scheduler": {
+"type": "slurm"
+}
+}

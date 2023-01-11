@@ -1,0 +1,3 @@
+{
+  "message": "Cluster 'test' does not exist or belongs to an incompatible ParallelCluster major version."
+}

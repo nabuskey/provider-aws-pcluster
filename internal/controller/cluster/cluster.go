@@ -63,8 +63,13 @@ const (
 	UpdateComplete   PClusterStatus = "UPDATE_COMPLETE"
 	UpdateFailed     PClusterStatus = "UPDATE_FAILED"
 
-	errStatusNotFound errStatus = "clusterNotFound"
-	errStatusEmpty    errStatus = "emptyMessage"
+	errPclusterCliNoChange             = "Bad Request: No changes found in your cluster configuration."
+	errPClusterCliDryRun               = "Request would have succeeded, but DryRun flag is set."
+	errPClusterCliInProgress errStatus = "Cannot execute update while stack is in"
+	errStatusNotFound        errStatus = "clusterNotFound"
+	errStatusEmpty           errStatus = "emptyMessage"
+	errStatusUpToDate        errStatus = "clusterUpToDate"
+	errStatusNotUpToDate     errStatus = "clusterNotUpToDate"
 )
 
 // A NoOpService does nothing.
@@ -90,10 +95,10 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 	r := managed.NewReconciler(mgr,
 		resource.ManagedKind(v1alpha1.ClusterGroupVersionKind),
 		managed.WithExternalConnecter(&connector{
-			kube:         mgr.GetClient(),
-			usage:        resource.NewProviderConfigUsageTracker(mgr.GetClient(), &apisv1alpha1.ProviderConfigUsage{}),
-			newServiceFn: newExectuor,
-			logger:       o.Logger,
+			kube:          mgr.GetClient(),
+			usage:         resource.NewProviderConfigUsageTracker(mgr.GetClient(), &apisv1alpha1.ProviderConfigUsage{}),
+			newExectuorFn: newExectuor,
+			logger:        o.Logger,
 		}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
 		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
@@ -111,10 +116,10 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 // A connector is expected to produce an ExternalClient when its Connect method
 // is called.
 type connector struct {
-	kube         client.Client
-	usage        resource.Tracker
-	newServiceFn func(creds []byte) (k8sexec.Interface, error)
-	logger       logging.Logger
+	kube          client.Client
+	usage         resource.Tracker
+	newExectuorFn func(creds []byte) (k8sexec.Interface, error)
+	logger        logging.Logger
 }
 
 func newExectuor(creds []byte) (k8sexec.Interface, error) {
@@ -147,7 +152,7 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 		return nil, errors.Wrap(err, errGetCreds)
 	}
 
-	svc, err := c.newServiceFn(data)
+	svc, err := c.newExectuorFn(data)
 	if err != nil {
 		return nil, errors.Wrap(err, errNewClient)
 	}
@@ -155,7 +160,11 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 	if err != nil {
 		return nil, err
 	}
-	env := append(os.Environ(), fmt.Sprintf("PATH=%s", path))
+	env := os.Environ()
+	if path != "" {
+		env = append(env, fmt.Sprintf("PATH=%s", path))
+	}
+
 	return &external{env: env, path: path, executor: svc, logger: c.logger}, nil
 }
 
@@ -182,6 +191,7 @@ func (c *external) execPcluster(ctx context.Context, cr *v1alpha1.Cluster, args 
 }
 
 // set up things that the pcluster cli needs. e.g. directory, configuration file, env vars, etc.
+// If the command exits with non-zero status, error is returned and []byte contains error message from stderr.
 func (c *external) execute(ctx context.Context, cr *v1alpha1.Cluster, args []string) ([]byte, error) {
 	dir, err := createTempDir(cr.Name)
 	if err != nil {
@@ -194,11 +204,32 @@ func (c *external) execute(ctx context.Context, cr *v1alpha1.Cluster, args []str
 	if err != nil {
 		return []byte{}, err
 	}
-	output, err := c.execPcluster(ctx, cr, args...)
-	if err != nil {
-		return []byte{}, err
+	return c.execPcluster(ctx, cr, args...)
+}
+
+func (c *external) isUpToDate(ctx context.Context, cr *v1alpha1.Cluster) (bool, error) {
+	args := []string{
+		"update-cluster",
+		"--dryrun", // this means pcluster exit status is always non-zero
+		"true",
+		"--cluster-name",
+		cr.Name,
+		"--cluster-configuration",
+		clusterConfigFileName,
 	}
-	return output, nil
+	output, err := c.execute(ctx, cr, args)
+	if err != nil && len(output) > 0 {
+		status, sErr := getErrorStatus(output, cr.Name)
+		if sErr != nil {
+			return false, sErr
+		}
+		if status == errStatusUpToDate {
+			return true, nil
+		}
+		return false, nil
+	}
+	c.logger.Debug("dryrun operation ended with exit code 0")
+	return false, err
 }
 
 func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
@@ -221,24 +252,24 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		return managed.ExternalObservation{}, fmt.Errorf("failed to unmarshal describe response: %w", err)
 	}
 
-	eo := managed.ExternalObservation{}
+	isUpToDate, err := c.isUpToDate(ctx, cr)
+	if err != nil {
+		return managed.ExternalObservation{}, fmt.Errorf("could not determine if resource is up-to-date: %w", err)
+	}
+
+	eo := managed.ExternalObservation{
+		ResourceUpToDate: isUpToDate,
+	}
 	switch describeOutput.ClusterStatus {
 	case CreateInProgress, UpdateInProgress, DeleteInProgress:
 		eo.ResourceExists = true
-		eo.ResourceUpToDate = true
 	case CreateComplete, UpdateComplete:
 		eo.ResourceExists = true
-		eo.ResourceUpToDate = true
 		cr.SetConditions(xpv1.Available())
-	case CreateFailed:
+	case CreateFailed, DeleteComplete:
 		eo.ResourceExists = false
-		eo.ResourceUpToDate = true
-	case DeleteComplete:
-		eo.ResourceExists = false
-		eo.ResourceUpToDate = true
 	case UpdateFailed, DeleteFailed:
 		eo.ResourceExists = true
-		eo.ResourceUpToDate = true
 		cr.SetConditions(xpv1.Unavailable())
 	}
 	setStatus(describeOutput.OutputCluster, cr)
@@ -304,7 +335,7 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 	if err != nil {
 		return managed.ExternalUpdate{}, fmt.Errorf("failed to unmarshal update output: %w", err)
 	}
-	setStatus(updateOutput.Cluster, cr)
+	c.logger.Debug(fmt.Sprintf("updated to reflect %d changes", len(updateOutput.ChangeSet)))
 	return managed.ExternalUpdate{
 		// Optionally return any details that may be required to connect to the
 		// external resource. These will be stored as the connection secret.
@@ -363,9 +394,14 @@ func getErrorStatus(cmdOutput []byte, clusterName string) (errStatus, error) {
 		return "", err
 	}
 	msg := pErr.Message
+	// exact match may become problematic later.
 	switch {
 	case strings.HasPrefix(msg, fmt.Sprintf("Cluster '%s' does not exist", clusterName)):
 		return errStatusNotFound, nil
+	case msg == errPclusterCliNoChange, strings.HasPrefix(msg, errPClusterCliInProgress):
+		return errStatusUpToDate, nil
+	case msg == errPClusterCliDryRun:
+		return errStatusNotUpToDate, nil
 	default:
 		return errStatusEmpty, nil
 	}

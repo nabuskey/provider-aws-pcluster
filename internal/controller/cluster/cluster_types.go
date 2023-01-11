@@ -55,7 +55,8 @@ type DeleteClusterOutput struct {
 }
 
 type UpdateClusterOutput struct {
-	Cluster OutputCluster `json:"cluster"`
+	Cluster   OutputCluster `json:"cluster"`
+	ChangeSet []any         `json:"changeSet,omitempty"`
 }
 
 type errorOutput struct {
